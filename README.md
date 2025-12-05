@@ -1,7 +1,5 @@
 # ZKTeco Checkin Sync
 
-## Professional ERPNext Biometric Integration Solution
-
 ---
 
 ## Executive Summary
@@ -51,7 +49,7 @@
 cd /path/to/frappe-bench
 
 # Get the application
-bench get-app https://github.com/Musab1khan/zkteco_checkins_sync
+bench get-app https://github.com/Musab1khan/Zkteco-Checkins-Sync.git
 
 # Install on your site
 bench --site your-site.com install-app zkteco_checkins_sync
