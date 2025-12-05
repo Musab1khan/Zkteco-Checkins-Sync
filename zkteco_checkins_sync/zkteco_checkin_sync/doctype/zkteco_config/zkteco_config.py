@@ -5,26 +5,121 @@ import frappe
 from frappe.model.document import Document
 from frappe import _
 import requests
-from frappe.utils import today, now_datetime, get_datetime, flt
+from frappe.utils import today, now_datetime, get_datetime, flt, cint
 from datetime import datetime, timedelta
 import json
+import socket
+try:
+    from zk import ZK
+except Exception:
+    ZK = None
 
 
 class ZKTecoConfig(Document):
     pass
 
 
+def detect_log_type(transaction):
+    """
+    Intelligently detect if transaction is IN or OUT
+    Checks multiple possible fields from ZKTeco
+    """
+    # Try punch_state (numeric)
+    punch_state = transaction.get('punch_state')
+    if punch_state is not None:
+        try:
+            state_int = int(punch_state)
+            return "OUT" if state_int == 1 else "IN"
+        except (ValueError, TypeError):
+            pass
+    
+    # Try punch_state_display (text)
+    punch_state_display = transaction.get('punch_state_display', '').lower()
+    if punch_state_display:
+        if 'out' in punch_state_display or 'چیک آؤٹ' in punch_state_display:
+            return "OUT"
+        elif 'in' in punch_state_display or 'چیک ان' in punch_state_display:
+            return "IN"
+    
+    # Try log_type field directly
+    log_type = transaction.get('log_type', '').upper()
+    if log_type in ['IN', 'OUT']:
+        return log_type
+    
+    # Try punch (device mode)
+    punch = transaction.get('punch')
+    if punch is not None:
+        try:
+            punch_int = int(punch)
+            return "OUT" if punch_int == 1 else "IN"
+        except (ValueError, TypeError):
+            pass
+    
+    return "IN"
+
+
 @frappe.whitelist()
-def register_api_token():
+def check_device_status(server_ip=None, server_port=None):
+    """
+    Simple socket connection check to device
+    Returns device status without needing token
+    """
+    server_ip = server_ip or frappe.db.get_single_value("ZKTeco Config", "server_ip")
+    server_port = server_port or frappe.db.get_single_value("ZKTeco Config", "server_port")
+    
+    if not server_ip or not server_port:
+        return {"connected": False, "error": "Server IP or Port not configured"}
+    
+    try:
+        import socket
+        import time
+        
+        start_time = time.time()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5)
+        
+        result = s.connect_ex((server_ip, int(server_port)))
+        response_time = (time.time() - start_time) * 1000  # Convert to ms
+        s.close()
+        
+        if result == 0:
+            return {
+                "connected": True,
+                "ip": server_ip,
+                "port": server_port,
+                "response_time": round(response_time, 2),
+                "message": "Device is online"
+            }
+        else:
+            return {
+                "connected": False,
+                "ip": server_ip,
+                "port": server_port,
+                "error": "Connection refused or timeout"
+            }
+    
+    except Exception as e:
+        return {
+            "connected": False,
+            "ip": server_ip,
+            "port": server_port,
+            "error": str(e)
+        }
+
+
+@frappe.whitelist()
+def register_api_token(server_ip: str | None = None, server_port: str | int | None = None, username: str | None = None, password: str | None = None):
     """
     Calls the remote API to obtain a token and returns it to the client.
     """
-    # Fetch from Single DocType
-    server_ip = frappe.db.get_single_value("ZKTeco Config", "server_ip")
-    server_port = frappe.db.get_single_value("ZKTeco Config", "server_port")
-    username = frappe.db.get_single_value("ZKTeco Config", "username")
-    password = frappe.db.get_single_value("ZKTeco Config", "password")
+    # Prefer values provided by the form; fallback to saved Single DocType values
+    server_ip = server_ip or frappe.db.get_single_value("ZKTeco Config", "server_ip")
+    server_port = server_port or frappe.db.get_single_value("ZKTeco Config", "server_port")
+    username = username or frappe.db.get_single_value("ZKTeco Config", "username")
+    password = password or frappe.db.get_single_value("ZKTeco Config", "password")
 
+    if str(server_port).strip() == "4370":
+        return {"success": True, "device_mode": True, "message": _("Token not required for device on port 4370.")}
     if not all([server_ip, server_port, username, password]):
         frappe.throw(_("Please configure server IP, port, username, and password in ZKTeco Config."))
 
@@ -62,6 +157,22 @@ def test_connection():
     server_ip = frappe.db.get_single_value("ZKTeco Config", "server_ip")
     server_port = frappe.db.get_single_value("ZKTeco Config", "server_port")
     
+    if str(server_port).strip() == "4370":
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(5)
+            s.connect((server_ip, int(server_port)))
+            s.close()
+            return {
+                "ok": True,
+                "status_code": 200,
+                "url": f"{server_ip}:{server_port}",
+                "total_transactions": 0,
+                "transactions_preview": [],
+                "message": _("Connected to device on port 4370. Token is not required."),
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
     if not token:
         return {"ok": False, "error": _("Token not set in ZKTeco Config. Please register/save a token first.")}
 
@@ -136,9 +247,7 @@ def test_connection():
                                 employee_name = f"{employee[1]} (ERPNext)" if isinstance(employee, tuple) else f"{employee} (ERPNext)"
                         
                         # Determine log type based on punch_state
-                        log_type = "IN"
-                        if punch_state == "1" or punch_state_display == "Check Out":
-                            log_type = "OUT"
+                        log_type = detect_log_type(transaction)
                         
                         formatted_transactions.append({
                             "id": transaction.get('id'),
@@ -196,6 +305,9 @@ def sync_zkteco_transactions():
     """
     # Check if sync is enabled
     cfg = frappe.get_single("ZKTeco Config")
+    if str(cfg.server_port).strip() == "4370":
+        frappe.logger().info("ZKTeco Sync skipped: Device mode (port 4370) does not support API-based sync.")
+        return
     if not cfg.enable_sync:
         frappe.log_error("ZKTeco sync is disabled", "ZKTeco Sync")
         return
@@ -307,15 +419,15 @@ def create_employee_checkin(transaction):
             punch_datetime = punch_time
         
         # Determine log type based on punch_state
-        log_type = "IN"
-        if punch_state == "1":  # Based on API response: "1" = Check Out
-            log_type = "OUT"
+        log_type = detect_log_type(transaction)
         
         # Check if checkin already exists (use transaction ID for uniqueness)
+        # Include log_type in the check to allow both IN and OUT
         existing_checkin = frappe.db.exists("Employee Checkin", {
             "employee": employee,
             "time": punch_datetime,
-            "device_id": device_id
+            "device_id": device_id,
+            "log_type": log_type
         })
         
         if existing_checkin:
@@ -379,6 +491,9 @@ def manual_sync():
     Manual sync trigger for testing
     """
     try:
+        cfg = frappe.get_single("ZKTeco Config")
+        if str(cfg.server_port).strip() == "4370":
+            return device_mode_sync()
         sync_zkteco_transactions()
         return {"success": True, "message": "Sync completed successfully"}
     except Exception as e:
@@ -409,7 +524,10 @@ def scheduled_sync():
             # Update last run time
             frappe.cache().set_value("zkteco_last_sync_run", current_time)
         
-        sync_zkteco_transactions()
+        if str(cfg.server_port).strip() == "4370":
+            device_mode_sync()
+        else:
+            sync_zkteco_transactions()
         
     except Exception as e:
         frappe.log_error(f"Scheduled ZKTeco sync failed: {str(e)}", "ZKTeco Scheduled Sync Error")
@@ -445,14 +563,114 @@ def get_sync_status():
             "creation": [">=", frappe.utils.add_days(today(), -1)]
         })
         
+        # Count IN and OUT separately
+        checkins_in = frappe.db.count("Employee Checkin", {
+            "device_id": ["like", "%ZKTeco%"],
+            "log_type": "IN",
+            "creation": [">=", frappe.utils.add_days(today(), -1)]
+        })
+        
+        checkins_out = frappe.db.count("Employee Checkin", {
+            "device_id": ["like", "%ZKTeco%"],
+            "log_type": "OUT",
+            "creation": [">=", frappe.utils.add_days(today(), -1)]
+        })
+        
         return {
             "enabled": cfg.enable_sync,
             "sync_frequency": cfg.seconds,
             "last_sync": last_sync,
             "recent_checkins_24h": recent_checkins,
+            "checkins_in_24h": checkins_in,
+            "checkins_out_24h": checkins_out,
             "server_configured": bool(cfg.server_ip and cfg.server_port),
             "token_configured": bool(cfg.token)
         }
         
     except Exception as e:
         return {"error": str(e)}
+
+
+@frappe.whitelist()
+def set_config(server_ip: str, server_port: str | int, enable_sync: int = 1, seconds: int | None = None):
+    cfg = frappe.get_single("ZKTeco Config")
+    cfg.server_ip = server_ip
+    cfg.server_port = str(server_port)
+    cfg.enable_sync = cint(enable_sync)
+    if seconds is not None:
+        cfg.seconds = str(seconds)
+    cfg.save(ignore_permissions=True)
+    frappe.db.commit()
+    return {
+        "ok": True,
+        "server_ip": cfg.server_ip,
+        "server_port": cfg.server_port,
+        "enable_sync": cfg.enable_sync,
+        "seconds": cfg.seconds,
+    }
+
+
+@frappe.whitelist()
+def device_mode_sync():
+    cfg = frappe.get_single("ZKTeco Config")
+    ip = cfg.server_ip
+    port = int(str(cfg.server_port or "4370").strip())
+    if port != 4370:
+        return {"success": False, "message": "Device mode only supports port 4370"}
+    if not ZK:
+        return {"success": False, "message": "Device library not available"}
+    try:
+        zk = ZK(ip, port=port, timeout=10, ommit_ping=True)
+        conn = zk.connect()
+        records = conn.get_attendance()
+        created = 0
+        for att in records or []:
+            if create_checkin_from_attendance(att, f"{ip}:{port}"):
+                created += 1
+        conn.disconnect()
+        frappe.db.set_single_value("ZKTeco Config", "last_sync", now_datetime())
+        total_synced = frappe.db.get_single_value("ZKTeco Config", "total_synced_records") or 0
+        frappe.db.set_single_value("ZKTeco Config", "total_synced_records", total_synced + created)
+        frappe.db.commit()
+        return {"success": True, "created": created}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+def create_checkin_from_attendance(att, device_id):
+    try:
+        emp_code = str(getattr(att, "user_id", "") or "").strip()
+        if not emp_code:
+            return False
+        employee = find_employee_by_code(emp_code)
+        if not employee:
+            return False
+        punch_datetime = getattr(att, "timestamp", None)
+        if not punch_datetime:
+            return False
+        log_type = "IN"
+        try:
+            punch_val = int(getattr(att, "punch", 0))
+            log_type = "OUT" if punch_val == 1 else "IN"
+        except Exception:
+            log_type = "IN"
+        existing = frappe.db.exists("Employee Checkin", {
+            "employee": employee,
+            "time": punch_datetime,
+            "device_id": device_id
+        })
+        if existing:
+            return True
+        checkin = frappe.get_doc({
+            "doctype": "Employee Checkin",
+            "employee": employee,
+            "time": punch_datetime,
+            "log_type": log_type,
+            "device_id": device_id,
+            "skip_auto_attendance": 0
+        })
+        checkin.insert(ignore_permissions=True)
+        frappe.db.commit()
+        return True
+    except Exception:
+        return False
