@@ -4,7 +4,7 @@
 frappe.ui.form.on("ZKTeco Config", {
     refresh(frm) {
         // Add custom buttons
-        if (frm.doc.enable_sync && frm.doc.token) {
+        if (frm.doc.enable_sync && (frm.doc.token || (frm.doc.server_port || '').toString() === '4370')) {
             frm.add_custom_button(__('Manual Sync'), function() {
                 manual_sync(frm);
             }, __('Actions'));
@@ -29,6 +29,63 @@ frappe.ui.form.on("ZKTeco Config", {
         }
     },
 
+    check_device_status(frm) {
+        frappe.call({
+            method: "zkteco_checkins_sync.zkteco_checkin_sync.doctype.zkteco_config.zkteco_config.check_device_status",
+            args: {
+                server_ip: frm.doc.server_ip,
+                server_port: frm.doc.server_port,
+            },
+            freeze: true,
+            freeze_message: __("Checking device connection...")
+        }).then((r) => {
+            const result = r.message || {};
+            
+            if (result.connected) {
+                frappe.msgprint({
+                    title: __("✅ Device Connected"),
+                    message: `
+                        <div style="padding: 15px; background-color: #d4edda; border-radius: 5px;">
+                            <h5 style="color: #155724; margin-top: 0;">🟢 Device is Reachable!</h5>
+                            <p><strong>IP:</strong> ${result.ip}</p>
+                            <p><strong>Port:</strong> ${result.port}</p>
+                            <p><strong>Response Time:</strong> ${result.response_time || 'N/A'} ms</p>
+                            <p style="margin-bottom: 0;"><strong>Status:</strong> Device is online and responding</p>
+                        </div>
+                    `,
+                    indicator: "green"
+                });
+            } else {
+                frappe.msgprint({
+                    title: __("❌ Device Not Connected"),
+                    message: `
+                        <div style="padding: 15px; background-color: #f8d7da; border-radius: 5px;">
+                            <h5 style="color: #721c24; margin-top: 0;">🔴 Device is Unreachable!</h5>
+                            <p><strong>IP:</strong> ${result.ip}</p>
+                            <p><strong>Port:</strong> ${result.port}</p>
+                            <p><strong>Error:</strong> ${result.error || 'Connection timeout'}</p>
+                            <hr>
+                            <p style="margin-bottom: 0;"><strong>Troubleshooting:</strong></p>
+                            <ul>
+                                <li>Check if ZKTeco device is powered on</li>
+                                <li>Verify IP address is correct</li>
+                                <li>Check network connectivity</li>
+                                <li>Ensure firewall allows connection on this port</li>
+                            </ul>
+                        </div>
+                    `,
+                    indicator: "red"
+                });
+            }
+        }).catch((e) => {
+            frappe.msgprint({
+                title: __("Error"),
+                message: `<pre style="white-space:pre-wrap; color: red;">${frappe.utils.escape_html(e.message || e)}</pre>`,
+                indicator: "red"
+            });
+        });
+    },
+
     test_connection(frm) {
         frappe.call({
             method: "zkteco_checkins_sync.zkteco_checkin_sync.doctype.zkteco_config.zkteco_config.test_connection",
@@ -48,10 +105,11 @@ frappe.ui.form.on("ZKTeco Config", {
                 } else {
                     frappe.msgprint({
                         title: __("Connection Successful"),
-                        message: __(`✅ Connected to ZKTeco device successfully!<br>
+                        message: __(`✅ Connection successful!<br>
                                    📊 Total transactions today: ${msg.total_transactions || 0}<br>
                                    🔗 URL: ${msg.url}<br>
-                                   📡 Status: ${msg.status_code}`),
+                                   📡 Status: ${msg.status_code}<br>
+                                   ${msg.message || ''}`),
                         indicator: "green"
                     });
                 }
@@ -80,6 +138,12 @@ frappe.ui.form.on("ZKTeco Config", {
     register_api_token(frm) {
         frappe.call({
             method: "zkteco_checkins_sync.zkteco_checkin_sync.doctype.zkteco_config.zkteco_config.register_api_token",
+            args: {
+                server_ip: frm.doc.server_ip,
+                server_port: frm.doc.server_port,
+                username: frm.doc.username,
+                password: frm.doc.password,
+            },
             freeze: true,
             freeze_message: __("Registering token...")
         }).then((r) => {
@@ -90,6 +154,11 @@ frappe.ui.form.on("ZKTeco Config", {
                         message: __("✅ API token registered and saved successfully!"), 
                         indicator: "green" 
                     });
+                });
+            } else if (r.message && r.message.device_mode) {
+                frappe.show_alert({
+                    message: __("✅ Device mode detected on port 4370 – token not required."),
+                    indicator: "green"
                 });
             }
         }).catch((e) => {
@@ -200,6 +269,8 @@ function show_sync_status(frm) {
                         <tr><td><strong>Sync Frequency:</strong></td><td>Every ${status.sync_frequency || 'N/A'} seconds</td></tr>
                         <tr><td><strong>Last Sync:</strong></td><td>${status.last_sync || 'Never'}</td></tr>
                         <tr><td><strong>Recent Check-ins (24h):</strong></td><td>${status.recent_checkins_24h || 0}</td></tr>
+                        <tr><td><strong>Check-ins IN (24h):</strong></td><td>${status.checkins_in_24h || 0}</td></tr>
+                        <tr><td><strong>Check-ins OUT (24h):</strong></td><td>${status.checkins_out_24h || 0}</td></tr>
                         <tr><td><strong>Server Configured:</strong></td><td>${status.server_configured ? '✅ Yes' : '❌ No'}</td></tr>
                         <tr><td><strong>Token Configured:</strong></td><td>${status.token_configured ? '✅ Yes' : '❌ No'}</td></tr>
                      </table>`;
@@ -218,13 +289,14 @@ function show_sync_status(frm) {
 function show_sync_indicator(frm) {
     const sync_frequency = frm.doc.seconds;
     const token_configured = frm.doc.token ? true : false;
+    const device_mode = (frm.doc.server_port || '').toString() === '4370';
     
     let indicator_color = 'red';
     let indicator_text = 'Sync Disabled';
     
-    if (frm.doc.enable_sync && token_configured) {
+    if (frm.doc.enable_sync && (token_configured || device_mode)) {
         indicator_color = 'green';
-        indicator_text = `Sync Active (${sync_frequency}s)`;
+        indicator_text = device_mode ? 'Device Mode (4370)' : `Sync Active (${sync_frequency}s)`;
     } else if (frm.doc.enable_sync) {
         indicator_color = 'orange';
         indicator_text = 'Sync Enabled (Token Missing)';
