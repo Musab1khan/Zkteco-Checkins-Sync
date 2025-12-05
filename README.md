@@ -8,8 +8,6 @@
 
 **ZKTeco Checkin Sync** is an enterprise-grade Frappe/ERPNext application that automates the synchronization of employee attendance data from ZKTeco biometric devices. This solution provides real-time check-in/check-out transaction management with intelligent employee mapping, duplicate prevention, and comprehensive audit logging.
 
-**Current Version:** 1.0.0 | **Status:** Production Ready ✅
-
 ---
 
 ## Key Features
