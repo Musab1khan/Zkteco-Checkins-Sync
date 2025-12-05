@@ -654,10 +654,12 @@ def create_checkin_from_attendance(att, device_id):
             log_type = "OUT" if punch_val == 1 else "IN"
         except Exception:
             log_type = "IN"
+        # Fixed: Include log_type in duplicate check to allow both IN and OUT
         existing = frappe.db.exists("Employee Checkin", {
             "employee": employee,
             "time": punch_datetime,
-            "device_id": device_id
+            "device_id": device_id,
+            "log_type": log_type
         })
         if existing:
             return True
