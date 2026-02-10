@@ -1,7 +1,6 @@
 # Copyright (c) 2025, osama.ahmed@deliverydevs.com
 # For license information, please see license.txt
 
-from __future__ import annotations
 import frappe
 from frappe.model.document import Document
 from frappe import _
@@ -1502,6 +1501,7 @@ def remove_duplicate_checkins():
         frappe.log_error(f"Error removing duplicates: {str(e)}", "ZKTeco Duplicate Removal Error")
         return {"success": False, "message": str(e)}
 
+
 def sync_multiple_devices(cfg):
     """
     Sync from multiple ZKTeco devices configured in child table
@@ -1656,4 +1656,3 @@ def sync_single_api_mode(device):
 
     except Exception as e:
         return {"success": False, "message": str(e)}
-

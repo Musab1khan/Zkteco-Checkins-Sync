@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-<<<<<<< HEAD
-from __future__ import annotations
-=======
->>>>>>> upstream/multi-devices
 """
 Script to fix existing Employee Checkin records that have incorrect IN/OUT log types.
 This script will:
