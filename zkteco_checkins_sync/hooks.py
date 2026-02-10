@@ -1,3 +1,4 @@
+from __future__ import annotations
 app_name = "zkteco_checkins_sync"
 app_title = "ZKTeco Checkin Sync"
 app_publisher = "osama.ahmed@deliverydevs.com"

@@ -8,12 +8,21 @@ frappe.ui.form.on("ZKTeco Config", {
             frm.add_custom_button(__('Manual Sync'), function() {
                 manual_sync(frm);
             }, __('Actions'));
-            
+
             frm.add_custom_button(__('Sync Status'), function() {
                 show_sync_status(frm);
             }, __('Actions'));
         }
-        
+
+        // Add maintenance buttons
+        frm.add_custom_button(__('🔧 Fix IN/OUT Types'), function() {
+            fix_checkin_types(frm);
+        }, __('Maintenance'));
+
+        frm.add_custom_button(__('🗑️ Remove Duplicates'), function() {
+            remove_duplicates(frm);
+        }, __('Maintenance'));
+
         // Show sync status indicator
         if (frm.doc.enable_sync) {
             show_sync_indicator(frm);
@@ -290,10 +299,10 @@ function show_sync_indicator(frm) {
     const sync_frequency = frm.doc.seconds;
     const token_configured = frm.doc.token ? true : false;
     const device_mode = (frm.doc.server_port || '').toString() === '4370';
-    
+
     let indicator_color = 'red';
     let indicator_text = 'Sync Disabled';
-    
+
     if (frm.doc.enable_sync && (token_configured || device_mode)) {
         indicator_color = 'green';
         indicator_text = device_mode ? 'Device Mode (4370)' : `Sync Active (${sync_frequency}s)`;
@@ -301,6 +310,66 @@ function show_sync_indicator(frm) {
         indicator_color = 'orange';
         indicator_text = 'Sync Enabled (Token Missing)';
     }
-    
+
     frm.dashboard.add_indicator(indicator_text, indicator_color);
+}
+
+function fix_checkin_types() {
+    frappe.confirm(
+        __('This will fix all existing Employee Checkin records with incorrect IN/OUT log types. Continue?'),
+        function() {
+            frappe.call({
+                method: "zkteco_checkins_sync.zkteco_checkin_sync.doctype.zkteco_config.zkteco_config.fix_existing_checkins",
+                freeze: true,
+                freeze_message: __("Fixing checkin records...")
+            }).then((r) => {
+                if (r.message && r.message.success) {
+                    frappe.msgprint({
+                        title: __('✅ Fix Complete'),
+                        message: `<div style="padding: 15px;">
+                                    <p><strong>${r.message.message}</strong></p>
+                                    <p>Updated ${r.message.updated_count || 0} records</p>
+                                 </div>`,
+                        indicator: 'green'
+                    });
+                } else {
+                    frappe.msgprint({
+                        title: __('Error'),
+                        message: r.message.message || 'Unknown error',
+                        indicator: 'red'
+                    });
+                }
+            });
+        }
+    );
+}
+
+function remove_duplicates() {
+    frappe.confirm(
+        __('This will remove duplicate Employee Checkin records (same employee, time, and log type). Continue?'),
+        function() {
+            frappe.call({
+                method: "zkteco_checkins_sync.zkteco_checkin_sync.doctype.zkteco_config.zkteco_config.remove_duplicate_checkins",
+                freeze: true,
+                freeze_message: __("Removing duplicate records...")
+            }).then((r) => {
+                if (r.message && r.message.success) {
+                    frappe.msgprint({
+                        title: __('✅ Cleanup Complete'),
+                        message: `<div style="padding: 15px;">
+                                    <p><strong>${r.message.message}</strong></p>
+                                    <p>Removed ${r.message.deleted_count || 0} duplicate records</p>
+                                 </div>`,
+                        indicator: 'green'
+                    });
+                } else {
+                    frappe.msgprint({
+                        title: __('Error'),
+                        message: r.message.message || 'Unknown error',
+                        indicator: 'red'
+                    });
+                }
+            });
+        }
+    );
 }

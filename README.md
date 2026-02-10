@@ -14,7 +14,7 @@
 
 - **Real-time Synchronization**: Configurable sync intervals (10 seconds to 1 hour)
 - **Bidirectional Support**: Both API mode (ZKBio Time Server) and Device mode (Port 4370)
-- **Intelligent Log Type Detection**: 4-point detection algorithm for CHECK-IN/CHECK-OUT classification
+- **Intelligent Log Type Detection**: Sequence-based algorithm for CHECK-IN/CHECK-OUT classification
 - **Employee Mapping**: Automatic mapping via Employee ID, User ID, or custom fields
 - **Duplicate Prevention**: Smart duplicate detection with log_type awareness
 - **Device Health Monitoring**: Quick connectivity status checks without token requirement
@@ -26,6 +26,13 @@
 - **Transaction Preview**: Pre-sync transaction review with employee mapping validation
 - **Separate IN/OUT Counting**: Distinct metrics for check-ins and check-outs
 - **Multi-mode Support**: Automatic device mode detection (port 4370)
+
+### 🆕 Maintenance & Fix Tools (NEW!)
+
+- **🔧 One-Click Fix IN/OUT Types**: Automatically fix all existing records with incorrect log types
+- **🗑️ Remove Duplicates**: Clean up duplicate checkin records with one click
+- **Sequence-Based Detection**: Intelligent alternating IN/OUT logic (First=IN, Last=OUT, Middle=Alternate)
+- **No Manual Intervention**: Fully automated fixes for common data issues
 
 ---
 
@@ -141,6 +148,44 @@ bench build
    - Recent check-ins (total, IN count, OUT count)
    - Server and token configuration status
 
+### 🆕 Maintenance Operations (NEW!)
+
+#### Fix Incorrect IN/OUT Log Types
+
+If you have existing records with wrong IN/OUT types (e.g., all showing as IN):
+
+1. Open ZKTeco Config form
+2. Click **"🔧 Fix IN/OUT Types"** in Maintenance menu
+3. Confirm the action
+4. System will automatically:
+   - Analyze all checkin records by employee and date
+   - Apply intelligent sequence logic (First punch = IN, Last = OUT, Middle = Alternate)
+   - Update incorrect records
+   - Show summary of fixed records
+
+**Use this when:**
+- All records show as "IN" but should have "OUT" entries
+- After importing old data
+- After fixing sync logic issues
+
+#### Remove Duplicate Checkins
+
+If you have duplicate records (same employee, same time, same log type):
+
+1. Open ZKTeco Config form
+2. Click **"🗑️ Remove Duplicates"** in Maintenance menu
+3. Confirm the action
+4. System will:
+   - Find all duplicate records
+   - Keep the oldest record (first created)
+   - Delete newer duplicates
+   - Show count of removed records
+
+**Use this when:**
+- Multiple syncs created duplicate entries
+- Same transaction appears multiple times
+- After data migration issues
+
 ---
 
 ## Employee Mapping
@@ -206,24 +251,60 @@ If transactions show "Employee Not Found":
 ### Transaction Flow Diagram
 
 ```
-ZKTeco Device
+ZKTeco Device (Fingerprint Punch)
     ↓
-[API/Device Mode]
+[API Mode or Device Mode (Port 4370)]
     ↓
-detect_log_type() → Classify IN/OUT
+fetch_zkteco_transactions() → Get all transactions
     ↓
-find_employee_by_code() → Employee lookup
+adjust_checkin_sequence() → Group by employee & date
     ↓
-[Duplicate Check with log_type]
+Sequence-Based Detection:
+  - Single punch → IN
+  - First punch of day → IN
+  - Last punch of day → OUT
+  - Middle punches → Alternate (IN→OUT→IN→OUT)
     ↓
-create_employee_checkin() → Create record
+create_employee_checkin() → With correct log_type
     ↓
-ERPNext Employee Checkin
+[Duplicate Check: employee + time + log_type]
+    ↓
+ERPNext Employee Checkin Record
 ```
 
-### Log Type Detection Logic
+### Log Type Detection Logic (Sequence-Based)
 
-The system uses a 4-point detection algorithm:
+**🆕 NEW: Intelligent Sequence Detection**
+
+The system now uses a **smart sequence-based algorithm** that works perfectly for Device Mode (Port 4370):
+
+1. **Group by Employee & Date**: All punches are grouped per employee per day
+2. **Sort by Time**: Chronological order ensures correct sequence
+3. **Apply Rules**:
+   - If only **1 punch** → **IN** (employee forgot to punch out)
+   - **First punch** of the day → **IN** (morning arrival)
+   - **Last punch** of the day → **OUT** (evening departure)
+   - **Middle punches** → Alternate between IN and OUT
+
+**Example:**
+```
+Employee: John Doe | Date: 2025-12-08
+
+09:00 AM → IN  (First punch)
+12:00 PM → OUT (Previous was IN)
+01:00 PM → IN  (Previous was OUT)
+06:00 PM → OUT (Last punch)
+```
+
+**Benefits:**
+- ✅ Works even when device doesn't send punch type
+- ✅ Handles multiple breaks during the day
+- ✅ Automatically fixes incorrect sequences
+- ✅ No manual intervention needed
+
+**Fallback Detection (API Mode):**
+
+For API mode, the system also checks these fields:
 
 1. **punch_state (numeric)**: 0=IN, 1=OUT
 2. **punch_state_display (text)**: "Check In"/"Check Out"
@@ -396,32 +477,76 @@ SELECT employee FROM `tabEmployee`
 
 ### Issue: Only CHECK-IN Records, No CHECK-OUT
 
-**Root Cause:** Old code didn't include `log_type` in duplicate check
+**🆕 FIXED! Use the new maintenance tools:**
 
-**Fix Applied in v1.0:**
-```python
-# Correct duplicate check (now in place)
-existing = frappe.db.exists("Employee Checkin", {
-    "employee": employee,
-    "time": punch_datetime,
-    "device_id": device_id,
-    "log_type": log_type  # ← This prevents false duplicates
-})
-```
+**Quick Fix (Recommended):**
+1. Open ZKTeco Config form
+2. Click **"🔧 Fix IN/OUT Types"** in Maintenance menu
+3. Confirm and wait for completion
+4. All records will be automatically corrected!
+
+**What was the problem?**
+- Device Mode (Port 4370) doesn't always send punch type from the device
+- Old code couldn't differentiate between IN and OUT
+- All punches were being marked as "IN" by default
+
+**How it's fixed now:**
+- Sequence-based detection algorithm
+- Groups punches by employee and date
+- First punch = IN, Last punch = OUT
+- Middle punches alternate automatically
 
 **Verification:**
 ```python
 # Check your data has both IN and OUT
-frappe.db.count("Employee Checkin", {
+in_count = frappe.db.count("Employee Checkin", {
     "log_type": "IN",
-    "device_id": ["like", "%ZKTeco%"]
+    "device_id": ["like", "%:4370%"]
 })
 
-frappe.db.count("Employee Checkin", {
+out_count = frappe.db.count("Employee Checkin", {
     "log_type": "OUT",
-    "device_id": ["like", "%ZKTeco%"]
+    "device_id": ["like", "%:4370%"]
 })
+
+print(f"IN: {in_count}, OUT: {out_count}")
+# Should show reasonable split, not all IN!
 ```
+
+**Before Fix:**
+```
+Total Records: 121
+IN: 121 ❌
+OUT: 0 ❌
+```
+
+**After Fix:**
+```
+Total Records: 121
+IN: 71 ✅
+OUT: 50 ✅
+```
+
+### Issue: Duplicate Checkin Records
+
+**🆕 FIXED! Use the duplicate removal tool:**
+
+**Quick Fix:**
+1. Open ZKTeco Config form
+2. Click **"🗑️ Remove Duplicates"** in Maintenance menu
+3. Confirm and wait for completion
+
+**What causes duplicates?**
+- Multiple sync runs on the same data
+- Network issues causing retries
+- System restart during sync
+
+**How duplicates are detected:**
+- Same employee
+- Same timestamp
+- Same log_type (IN/OUT)
+
+Oldest record is kept, newer duplicates are deleted.
 
 ### Issue: Sync Takes Too Long
 
@@ -726,25 +851,101 @@ frappe.db.get_list("Error Log", {
 
 ---
 
+## Version History & Changelog
+
+### v2.0.0 (December 2025) - 🆕 Major Update
+
+**New Features:**
+- ✅ **Intelligent Sequence-Based Log Type Detection**
+  - Automatic IN/OUT detection for Device Mode (Port 4370)
+  - No longer depends on device sending punch type
+  - Groups by employee and date, applies smart rules
+
+- ✅ **One-Click Maintenance Tools**
+  - "Fix IN/OUT Types" button in Maintenance menu
+  - "Remove Duplicates" button in Maintenance menu
+  - No coding required, fully automated
+
+- ✅ **Enhanced Device Mode Support**
+  - Proper sequence adjustment for all transactions
+  - Works even when device doesn't send punch state
+  - Handles multiple breaks during the day
+
+**Bug Fixes:**
+- Fixed: All records showing as "IN" in Device Mode
+- Fixed: Duplicate records created during sync
+- Fixed: Middle punches not alternating correctly
+- Improved: Transaction processing performance
+
+**Breaking Changes:**
+- None - fully backward compatible
+
+### v1.0.0 (Initial Release)
+
+**Core Features:**
+- Real-time sync with ZKTeco devices
+- API Mode and Device Mode support
+- Employee mapping
+- Basic log type detection
+- Dynamic scheduler
+
+---
+
 ## Upgrade Guide
 
-### Upgrading to Latest Version
+### Upgrading to v2.0.0 from v1.x
 
 ```bash
 # Navigate to bench directory
 cd /path/to/frappe-bench
 
-# Update app
-bench pull zkteco_checkins_sync
+# Update app from GitHub
+cd apps/zkteco_checkins_sync
+git pull origin main
 
-# Run migrations
+# Navigate back to bench root
+cd ../..
+
+# Run migrations (if any)
 bench --site your-site.com migrate
-
-# Rebuild assets
-bench build
 
 # Clear cache
 bench --site your-site.com clear-cache
+
+# Rebuild assets (important for new buttons!)
+bench build --app zkteco_checkins_sync
+
+# Restart
+bench restart
+```
+
+### Post-Upgrade Steps
+
+After upgrading to v2.0.0:
+
+1. **Fix Existing Data:**
+   - Open ZKTeco Config: `/app/zkteco-config`
+   - Click "🗑️ Remove Duplicates" if you have duplicates
+   - Click "🔧 Fix IN/OUT Types" to correct all records
+
+2. **Verify New Features:**
+   - Check that both buttons appear in Maintenance menu
+   - Test connection to ensure sync still works
+   - Monitor next sync to verify proper IN/OUT detection
+
+3. **Optional: Clean Up:**
+   - Review Employee Checkin list
+   - Verify IN/OUT ratio is reasonable (~50/50)
+   - Check sync logs for any warnings
+
+**Rollback (if needed):**
+```bash
+cd apps/zkteco_checkins_sync
+git checkout v1.0.0
+cd ../..
+bench --site your-site.com clear-cache
+bench build --app zkteco_checkins_sync
+bench restart
 ```
 
 
